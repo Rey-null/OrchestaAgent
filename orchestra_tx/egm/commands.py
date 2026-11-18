@@ -556,9 +556,5 @@ def run(args) -> int:
     handler = VERBS.get(verb)
     if handler is None:
         _error("unknown egm verb: {}".format(verb))
-        return return_code()
+        return stream.ExitCode.ARGS
     return handler(args)
-
-
-def return_code() -> int:
-    return stream.ExitCode.ARGS
