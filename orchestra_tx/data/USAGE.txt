@@ -1,0 +1,195 @@
+orchestra-tx - Termux plugin for orchestraCLI
+=============================================
+
+Session plan, persistent memory and a text-file display for the terminal.
+No dependencies: pure Python 3.9+ standard library, so it installs on Termux
+without a compiler.
+
+INSTALL (Termux)
+----------------
+  pkg install python
+  pip install orchestra-cli
+  git clone <this repo> && cd orchestra-tx
+  sh install-termux.sh
+  orchestra-tx doctor
+
+INSTALL (any other Linux/macOS)
+-------------------------------
+  pip install orchestra-cli
+  pip install -e .
+  orchestra-tx doctor
+
+GLOBAL OPTIONS
+--------------
+  --project DIR   work against DIR instead of the current directory
+  --json          machine readable output
+  --ascii         ASCII-only plan markers
+  --color         force ANSI colour        --no-color   disable ANSI colour
+  --version       print the version
+
+Every flag may appear before or after the subcommand.
+
+WORKSPACE
+---------
+  orchestra-tx init [--goal TEXT]
+      Create the store for this project and optionally seed the goal.
+
+PERSISTENT MEMORY (survives sessions, reboots and app restarts)
+--------------------------------------------------------------
+  orchestra-tx memory add TEXT [-t TAG ...] [--pin] [--global]
+  orchestra-tx memory list [-n 20] [--global] [--all]
+  orchestra-tx memory search QUERY [-n 10] [--global] [--all]
+  orchestra-tx memory forget ID [--global]
+  orchestra-tx memory export [--format jsonl|json|md] [--global] [--all]
+
+  Project memory is stored per project; --global shares entries between all
+  projects. Entries are appended to memory.jsonl, so a killed session cannot
+  corrupt earlier notes. --pin entries are always offered in session context.
+
+SESSION PLAN
+------------
+  orchestra-tx plan new "GOAL" [--step "TEXT" ...]
+  orchestra-tx plan add "TEXT" [--note "TEXT"]
+  orchestra-tx plan use ID          mark the step being worked on
+  orchestra-tx plan done ID [--note "TEXT"]
+  orchestra-tx plan block ID [--note "TEXT"]
+  orchestra-tx plan note ID "TEXT"
+  orchestra-tx plan show            (alias: plan status)
+  orchestra-tx plan reset --yes
+
+  One step is active at a time. `plan done` prints the next active step.
+
+SESSIONS
+--------
+  orchestra-tx session start ["GOAL"]
+  orchestra-tx session status
+  orchestra-tx session context [-q]
+  orchestra-tx session list [-n 10]
+  orchestra-tx session end [--summary "TEXT"] [--no-remember]
+
+  `session start` and `session context` write <project>/.orchestra/context.md,
+  a Markdown block with the goal, the plan and the most recent memory.
+  `session end --summary` stores the summary in project memory, so the next
+  session starts with what the last one learned.
+
+TEXT FILE DISPLAY
+-----------------
+  orchestra-tx display FILE                 show a text file with line numbers
+  orchestra-tx display                      list .txt files in the project
+  orchestra-tx display --list [DIR]         list .txt files in DIR
+  orchestra-tx display --list --any-files   include .md .log .json .yaml ...
+  orchestra-tx display FILE -r 10-25        show a line range (repeatable)
+  orchestra-tx display FILE -r 1-5,40-      open ended range to end of file
+  orchestra-tx display FILE -n              no line numbers
+  orchestra-tx display FILE -w 40           wrap to 40 columns
+  orchestra-tx display FILE --no-wrap       never wrap
+  orchestra-tx display FILE --max-lines 50  stop after N lines
+  orchestra-tx display FILE -p              page through less/$PAGER
+  orchestra-tx display FILE --stats         line count summary on stderr
+  orchestra-tx display - < notes.txt        read from a pipe
+  orchestra-tx display FILE --encoding latin-1
+
+  Binary files are refused, CRLF is normalised, tabs expand to 4 columns,
+  and long lines wrap to the real terminal width by default.
+
+SEEING DESKTOP APPS (accessibility trees)
+-----------------------------------------
+  orchestra-tx see                       tree of the frontmost window
+  orchestra-tx see --app Safari          tree of one application
+  orchestra-tx see --depth 2             shallower tree (0 = unlimited)
+  orchestra-tx see --max-nodes 60        stop early on huge trees
+  orchestra-tx see --no-values           names and roles only
+  orchestra-tx see --json                stable JSON (summary + nested tree)
+  orchestra-tx see --apps                list applications
+  orchestra-tx see --backends            which backends work here, and why not
+  orchestra-tx see --dump FILE           re-render a captured tree ('-' = stdin)
+  orchestra-tx see --remember            store a one-line summary in memory
+
+  This is the same tree a screen reader walks, not a screenshot: no pixels,
+  no OCR, no vision model. Roles and states are always words, never glyphs,
+  so the output stays readable with a screen reader at 40 columns.
+
+  Backends (all optional, picked automatically):
+    macOS    System Events / osascript (Privacy > Accessibility)
+    Windows  UI Automation through PowerShell
+    Linux    AT-SPI2 through pyatspi (sudo apt install python3-pyatspi)
+    Android  uiautomator dump through adb (Termux, wireless debugging)
+
+  A missing backend exits 3, never an empty success. Capture a dump on a
+  desktop with `see > tree.txt`, then read it on the phone with
+  `see --dump tree.txt`.
+
+EGM DESIGN LOOP (Elephant-Goldfish Model)
+-----------------------------------------
+  orchestra-tx egm init [--dir DIR] [--force]  scaffold + design index
+  orchestra-tx egm status                      design, round, stage, next
+  orchestra-tx egm brief [--write]             seed concepts_brief.md
+  orchestra-tx egm review REPORT.md [--design PATH]
+                                               import a goldfish review
+  orchestra-tx egm check [DESIGN]              exit 4 on open blocker/major
+
+  Designs live in <project>/.orchestra/designs/ with a SITEMAP.md index;
+  state lives in <project>/.orchestra/egm/. orchestra-tx imports review
+  reports, it never runs a review: a fresh-context host does that, and a
+  review is never a human approval.
+
+  `brief` renders the goal, plan steps, pinned memory and the last session
+  from this plugin. The generated part is fenced by
+  <!-- orchestra-tx:generated:start/end --> markers, so running
+  `egm brief --write` again replaces only that block and keeps any text you
+  wrote yourself.
+
+  Secrets are redacted before writing and the matched pattern families are
+  named, e.g. `redacted 2 matches: API_KEY, sk-`.
+
+  A project with AGENTS.md or CLAUDE.md gets a warning before review: a
+  reviewer that loads project files is no longer fresh-context.
+
+  Review reports: sections such as `## Blockers`, `## Major`, `## Minor`
+  with headings like
+  `### B1 - Persona: security - Location: src/auth.py:42`
+  or plain bullets are both accepted. Unparsed text is kept raw, never
+  dropped. Finding ids are content hashes, so importing a revised report
+  keeps the triage decisions you already made.
+
+  Exit codes: 0 ok  1 state/usage  2 bad arguments  3 missing artifact
+              4 unsettled blocker/major (check)  5 lock timeout  130 Ctrl-C
+
+RUNNING ORCHESTRACLI WITH CONTEXT
+---------------------------------
+  orchestra-tx run -- pipeline list
+  orchestra-tx run -- pipeline validate pipeline.yaml
+  orchestra-tx run --print-env
+
+  `run` exports the current plan, memory and context file before starting
+  orchestra:
+
+    ORCHESTRA_TX_PROJECT   project directory
+    ORCHESTRA_TX_STORE     plugin store for the project
+    ORCHESTRA_TX_PLAN      plan.json
+    ORCHESTRA_TX_MEMORY    memory.jsonl
+    ORCHESTRA_TX_SESSION   active session id
+    ORCHESTRA_TX_CONTEXT   .orchestra/context.md
+
+  Set ORCHESTRA_BIN to pin a specific orchestra binary.
+
+FILES AND LOCATIONS
+-------------------
+  ORCHESTRA_TX_HOME   default: $XDG_DATA_HOME/orchestra-tx
+                             or ~/.local/share/orchestra-tx
+    projects/<name>-<hash>/plan.json        plan for one project
+    projects/<name>-<hash>/memory.jsonl     persistent memory
+    projects/<name>-<hash>/sessions/*.json  session history
+    projects/<name>-<hash>/current          active session pointer
+    global/memory.jsonl                     shared memory
+
+  <project>/.orchestra/context.md           generated context for orchestra
+
+TROUBLESHOOTING
+---------------
+  orchestra-tx doctor              checks Termux, python, orchestraCLI and store
+  orchestra-tx usage               prints this file
+  orchestra-tx usage --file FILE   displays any other text file
+
+  "orchestraCLI not found" -> pip install orchestra-cli, then re-run doctor.
+  Storage permission errors -> keep the store inside $HOME, not /sdcard.
