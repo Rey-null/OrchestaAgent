@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orchestra-tx"
+version = "0.1.0"
+description = "Termux-friendly plugin for orchestraCLI: session plans, persistent memory and a terminal text-file display"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "orchestra-tx" }]
+keywords = ["orchestra", "termux", "cli", "planning", "memory"]
+dependencies = []
+
+[project.scripts]
+orchestra-tx = "orchestra_tx.cli:main"
+
+[tool.setuptools]
+packages = ["orchestra_tx", "orchestra_tx.egm", "orchestra_tx.ui"]
+
+[tool.setuptools.package-data]
+orchestra_tx = ["data/*.txt"]
