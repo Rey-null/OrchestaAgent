@@ -793,6 +793,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_egm_review.add_argument("report", metavar="REPORT.md", help="review report written by the host")
     p_egm_review.add_argument("--design", metavar="PATH", help="design the review applies to")
 
+    p_egm_report = _egm_verb("report", "read the imported findings, grouped by severity")
+    p_egm_report.add_argument("--severity", action="append", metavar="S",
+                              help="only this severity (repeatable: blocker, major, minor, nit)")
+    p_egm_report.add_argument("--persona", action="append", metavar="P", help="only this persona (repeatable)")
+    p_egm_report.add_argument("--raw", action="store_true", help="show the reviewer's own text")
+    p_egm_report.add_argument("-r", "--range", dest="ranges", action="append", metavar="N[-M]",
+                              help="line or range of the rendered report (repeatable, comma separated)")
+    p_egm_report.add_argument("-p", "--pager", action="store_true", help="page the output")
+
+    p_egm_resolve = _egm_verb("resolve", "triage findings one key at a time (p/c/e/d/s/q)")
+    p_egm_resolve.add_argument("--decide", metavar="D",
+                               help="decide without a prompt: propose|contest|escalate|decline|skip (or p/c/e/d/s)")
+    p_egm_resolve.add_argument("--all", dest="all", action="store_true",
+                               help="with --decide: settle every open finding")
+    p_egm_resolve.add_argument("--lock-timeout", dest="lock_timeout", type=float, default=5.0, metavar="SEC",
+                               help="seconds to wait for another session's lock (default: 5)")
+
     p_egm_check = _egm_verb("check", "exit 4 on an unsettled Blocker or Major finding")
     p_egm_check.add_argument("design", nargs="?", help="design to check (default: the last imported one)")
 
