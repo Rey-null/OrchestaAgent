@@ -17,7 +17,8 @@ from ..ui import layout, theme
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
 SETTLED_DECISIONS = ("propose", "contest", "decline")
-DECISION_LETTERS = {"p": "propose", "c": "contest", "e": "escalate", "d": "decline", "s": "skip", "q": "quit"}
+DECISIONS = ("propose", "contest", "escalate", "decline", "skip")
+DECISION_LETTERS = {"p": "propose", "c": "contest", "e": "escalate", "d": "decline", "s": "skip"}
 
 _SEV_RE = re.compile(r"\b(blockers?|majors?|minors?|nits?)\b", re.IGNORECASE)
 _SEV_MAP = {
@@ -68,14 +69,14 @@ def finding_id(persona: str, location: str, claim: str) -> str:
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:8]
 
 
-def _severity(text: str) -> str:
-    for word in _SEV_RE.findall(text or ""):
+def _severity(text: str, limit: int = 0) -> str:
+    """First severity word; ``limit`` keeps a later mention out of the lead."""
+    text = text or ""
+    if limit:
+        text = " ".join(text.split()[:limit])
+    for word in _SEV_RE.findall(text):
         return _SEV_MAP[word.lower()]
     return ""
-
-
-def _severity_first(text: str) -> str:
-    return _severity(" ".join((text or "").split()[:4]))
 
 
 def _segments(text: str) -> Tuple[Dict[str, str], List[str]]:
@@ -158,7 +159,7 @@ def parse_report(text: str) -> Tuple[List[Finding], Dict[str, str]]:
             if document:
                 meta[document.group(1).lower()] = document.group(2).strip()
                 continue
-            severity = _severity_first(body)
+            severity = _severity(body, limit=4)
             segments, rest = _segments(body)
             words = body.split()
             if severity and not segments and len(words) <= 3:
@@ -184,7 +185,7 @@ def parse_report(text: str) -> Tuple[List[Finding], Dict[str, str]]:
         if bullet:
             close()
             body = bullet.group(1).strip()
-            start(body, _severity_first(body), raw_line, section_severity)
+            start(body, _severity(body, limit=4), raw_line, section_severity)
             continue
 
         if current is not None:
@@ -196,12 +197,13 @@ def parse_report(text: str) -> Tuple[List[Finding], Dict[str, str]]:
 
 
 def decision_of(value: Any) -> str:
+    """Normalise a stored decision or a one-key letter; ``""`` when unknown."""
     if isinstance(value, dict):
         value = value.get("decision", "")
     word = str(value or "").strip().lower()
     if len(word) == 1:
-        return DECISION_LETTERS.get(word, "")
-    return word
+        word = DECISION_LETTERS.get(word, "")
+    return word if word in DECISIONS else ""
 
 
 def merge(previous: Sequence[dict], imported: Sequence[Finding], triage: Optional[dict] = None) -> Tuple[List[dict], Dict[str, int]]:
@@ -242,6 +244,34 @@ def unsettled(findings: Sequence[dict], severities: Sequence[str] = ("blocker", 
     ]
 
 
+def ordered(findings: Sequence[dict]) -> List[dict]:
+    """Blockers first, then persona and id, so reading and triage are stable."""
+    rank = {name: index for index, name in enumerate(SEVERITIES)}
+    rows = [row for row in findings if isinstance(row, dict)]
+    return sorted(rows, key=lambda row: (
+        rank.get(str(row.get("severity") or "").lower(), len(SEVERITIES)),
+        str(row.get("persona") or "").lower(),
+        str(row.get("id") or ""),
+    ))
+
+
+def filtered(findings: Sequence[dict], severities: Sequence[str] = (),
+             personas: Sequence[str] = ()) -> List[dict]:
+    """Keep rows matching every given filter; no filter keeps everything."""
+    wanted_sev = {str(name).strip().lower() for name in severities}
+    wanted_persona = {str(name).strip().lower() for name in personas}
+    rows: List[dict] = []
+    for row in findings:
+        if not isinstance(row, dict):
+            continue
+        if wanted_sev and str(row.get("severity") or "").lower() not in wanted_sev:
+            continue
+        if wanted_persona and str(row.get("persona") or "").lower() not in wanted_persona:
+            continue
+        rows.append(row)
+    return rows
+
+
 def summarize(findings: Sequence[dict]) -> dict:
     by_severity = {name: 0 for name in SEVERITIES}
     by_persona: Dict[str, int] = {}
@@ -265,26 +295,42 @@ def summarize(findings: Sequence[dict]) -> dict:
     }
 
 
-def render_findings(findings: Sequence[dict], width: int = 80, color_mode: str = "never") -> List[str]:
-    """One block per finding, wrapped so no line exceeds ``width``."""
+def render_findings(findings: Sequence[dict], width: int = 80, color_mode: str = "never",
+                    raw: bool = False, head: str = "severity") -> List[str]:
+    """One block per finding, wrapped so no line exceeds ``width``.
+
+    ``raw`` shows the reviewer's own text instead of the parsed claim. ``head``
+    picks the heading: ``severity`` (default), ``id`` (id first, for a screen
+    reader mid-triage) or ``persona`` (a caller already printed the severity).
+    """
     lines: List[str] = []
     for row in findings:
         if not isinstance(row, dict):
             continue
         label = layout.severity_label(row.get("severity"))
         persona = str(row.get("persona") or "unassigned")
-        head = "{} {}".format(label, persona)
-        lines.extend(theme.wrap(theme.paint(head, str(row.get("severity") or ""), color_mode), width, indent=0, hang=2))
+        ident = str(row.get("id") or "")
+        if head == "id":
+            title = "{}  {} / {}".format(ident, label, persona)
+        elif head == "persona":
+            title = persona
+        else:
+            title = "{} {}".format(label, persona)
+        # Wrap first, paint after: escapes would otherwise count as width and
+        # leave the colour open across the line break.
+        for piece in theme.wrap(title, width, indent=0, hang=2):
+            lines.append(theme.paint(piece, str(row.get("severity") or ""), color_mode))
         location = str(row.get("location") or "")
         if location:
             lines.extend(theme.wrap("at " + location, width, indent=2, hang=2))
-        claim = str(row.get("claim") or row.get("raw") or "(no claim text)")
-        lines.extend(theme.wrap(claim, width, indent=2, hang=2))
-        meta = "id " + str(row.get("id") or "")
-        if row.get("state"):
-            meta += "  " + str(row["state"])
-        if row.get("decision"):
-            meta += "  " + str(row["decision"])
-        lines.extend(theme.wrap(meta, width, indent=2, hang=2))
+        claim = (str(row.get("raw") or "") if raw else str(row.get("claim") or row.get("raw") or ""))
+        lines.extend(theme.wrap(claim or "(no claim text)", width, indent=2, hang=2))
+        if head != "id":
+            meta = "id " + ident
+            if row.get("state"):
+                meta += "  " + str(row["state"])
+            if row.get("decision"):
+                meta += "  " + str(row["decision"])
+            lines.extend(theme.wrap(meta, width, indent=2, hang=2))
         lines.append("")
     return lines
