@@ -126,6 +126,10 @@ EGM DESIGN LOOP (Elephant-Goldfish Model)
   orchestra-tx egm brief [--write]             seed concepts_brief.md
   orchestra-tx egm review REPORT.md [--design PATH]
                                                import a goldfish review
+  orchestra-tx egm report [--severity S] [--persona P] [--raw]
+                          [-r N[-M]] [-p]      read the imported findings
+  orchestra-tx egm resolve [--decide D [--all]]
+                                               one-key triage
   orchestra-tx egm check [DESIGN]              exit 4 on open blocker/major
 
   Designs live in <project>/.orchestra/designs/ with a SITEMAP.md index;
@@ -141,6 +145,23 @@ EGM DESIGN LOOP (Elephant-Goldfish Model)
 
   Secrets are redacted before writing and the matched pattern families are
   named, e.g. `redacted 2 matches: API_KEY, sk-`.
+
+  `egm report` groups the imported findings by severity (blocker first) and
+  persona. Filter with --severity/--persona, show the reviewer's own wording
+  with --raw, read a line range with -r, or page with -p. It ends with one
+  line of honesty: a review is not a test and not a human approval.
+
+  `egm resolve` walks the open findings one at a time and reads one key:
+    p propose   accept the finding as work
+    c contest   the finding is wrong
+    e escalate  needs a human decision
+    d decline   not doing this
+    s skip      leave it for later
+    q quit      stop; progress is saved and re-running resumes
+  Each decision goes to triage.json and to project memory tagged
+  egm,decision. Without a terminal it exits 1 and names the --decide form;
+  `--decide propose --all` settles everything open in one go. A second
+  resolve in the same project waits 5 s for the lock, then exits 5.
 
   A project with AGENTS.md or CLAUDE.md gets a warning before review: a
   reviewer that loads project files is no longer fresh-context.
