@@ -106,3 +106,18 @@ def save_findings(findings: List[dict], project: Optional[str] = None) -> Path:
 def load_triage(project: Optional[str] = None) -> Dict[str, Any]:
     data = store.read_json(triage_path(project), {})
     return data if isinstance(data, dict) else {}
+
+
+def save_triage(triage: Dict[str, Any], project: Optional[str] = None) -> Path:
+    return store.write_json(triage_path(project), triage)
+
+
+def decide(finding_id: str, decision: str, note: str = "", project: Optional[str] = None) -> dict:
+    """Record one decision atomically; earlier decisions are kept."""
+    triage = load_triage(project)
+    entry = {"decision": decision, "decided_at": now()}
+    if note:
+        entry["note"] = note
+    triage[str(finding_id)] = entry
+    save_triage(triage, project)
+    return entry
