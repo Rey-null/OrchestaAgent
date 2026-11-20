@@ -1,4 +1,4 @@
-"""The egm verbs implemented in this slice: init, status, brief, review, check."""
+"""The egm verbs implemented so far: init, status, brief, review, report, resolve, check."""
 
 from __future__ import annotations
 
@@ -9,15 +9,18 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .. import memory, plan as plan_mod, session as session_mod, store
+from .. import display, memory, plan as plan_mod, session as session_mod, store
 from ..ui import layout, stream, theme
 from . import artifacts, report, scaffold, state as state_mod
 
 INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 BRIEF_NAME = "concepts_brief.md"
 LOOP = (
-    "init -> brief -> review -> check -> (a fresh-context host reviews) -> approve"
+    "init -> brief -> review -> report -> resolve -> check -> approve"
 )
+TRUST_LINE = "A review is not a test and is not a human approval."
+DECISION_HINT = "p=propose c=contest e=escalate d=decline s=skip q=quit"
+LOCK_WAIT = 5.0
 
 VERBS = {}
 
@@ -107,6 +110,13 @@ def _isolation_lines(files: Sequence[str], width: int, mode: str) -> List[str]:
     return _warning_lines(_isolation_message(files), width, mode)
 
 
+def _add_warnings(lines: List[str], messages: Sequence[str], width: int, mode: str) -> None:
+    for message in messages:
+        if message:
+            lines.append("")
+            lines.extend(_warning_lines(message, width, mode))
+
+
 def _decisions(findings: Sequence[dict], triage: dict) -> List[dict]:
     rows: List[dict] = []
     for finding in findings:
@@ -144,6 +154,10 @@ def _status_word(project: Optional[str], state: dict, design: str) -> str:
     return scaffold.design_status(_resolve(project, design)) or "unknown"
 
 
+def _triage_next(findings: Sequence[dict]) -> str:
+    return "orchestra-tx egm resolve" if report.unsettled(findings) else "orchestra-tx egm check"
+
+
 def _next_action(ready: bool, design: str, findings: Sequence[dict], designs: Sequence[Path]) -> str:
     if not ready:
         return "orchestra-tx egm init"
@@ -151,7 +165,7 @@ def _next_action(ready: bool, design: str, findings: Sequence[dict], designs: Se
         return "orchestra-tx egm review REPORT.md --design PATH" if designs else "orchestra-tx egm brief --write"
     if not findings:
         return "orchestra-tx egm brief"
-    return "orchestra-tx egm check"
+    return _triage_next(findings)
 
 
 def _wrap_document(text: str, width: int) -> List[str]:
@@ -273,13 +287,10 @@ def egm_status(args, bare: bool = False) -> int:
     if stats["total"]:
         rows.append(("severity", _severity_line(stats)))
     lines = ["EGM status", ""] + layout.key_value(rows, width, mode)
-    lines += ["", "next    : " + next_action] if len("next    : " + next_action) <= width else ["", "next    :"] + theme.wrap(next_action, width, indent=10, hang=2)
-    for message in warnings:
-        if message:
-            lines.append("")
-            lines += _warning_lines(message, width, mode)
+    lines += [""] + layout.key_value([("next", next_action)], width, mode)
+    _add_warnings(lines, warnings, width, mode)
     if bare:
-        lines += ["", "Loop: " + LOOP] if len("Loop: " + LOOP) <= width else ["", "Loop:"] + theme.wrap(LOOP, width, indent=6, hang=2)
+        lines += [""] + layout.key_value([("loop", LOOP)], width, mode)
     _emit_lines(lines)
     return stream.ExitCode.OK
 
@@ -465,9 +476,241 @@ def egm_review(args) -> int:
         lines += layout.key_value([("severity", _severity_line(stats))], width, mode)
     lines.append("")
     lines += report.render_findings(rows, width, mode)
-    for message in warnings:
-        lines += _warning_lines(message, width, mode)
-    lines.append("next    : orchestra-tx egm check")
+    _add_warnings(lines, warnings, width, mode)
+    lines += [""] + layout.key_value([("next", "orchestra-tx egm report")], width, mode)
+    _emit_lines(lines)
+    return stream.ExitCode.OK
+
+
+def _filter_text(severities: Sequence[str], personas: Sequence[str]) -> str:
+    parts = []
+    if severities:
+        parts.append("--severity " + ", ".join(severities))
+    if personas:
+        parts.append("--persona " + ", ".join(personas))
+    return " and ".join(parts) or "the filter"
+
+
+def egm_report(args) -> int:
+    project = _project(args)
+    width = _width(args)
+    mode = _mode(args)
+    state, corrupt = state_mod.load_state(project)
+    findings = _decisions(state_mod.load_findings(project), state_mod.load_triage(project))
+    if not findings:
+        _error("no findings imported yet")
+        stream.diagnostic("  cause: egm report reads what 'egm review' imported")
+        stream.diagnostic("  next : orchestra-tx egm review REPORT.md")
+        return stream.ExitCode.MISSING
+
+    severities = [str(name) for name in getattr(args, "severity", None) or []]
+    personas = [str(name) for name in getattr(args, "persona", None) or []]
+    unknown = [name for name in severities if name not in report.SEVERITIES]
+    if unknown:
+        _error("unknown severity: {} (choose {})".format(", ".join(unknown), ", ".join(report.SEVERITIES)))
+        return stream.ExitCode.ARGS
+
+    raw = bool(getattr(args, "raw", False))
+    rows = report.ordered(report.filtered(findings, severities, personas))
+    totals = report.summarize(findings)
+    stats = report.summarize(rows)
+    design = state.get("design") or ""
+    payload = {
+        "status": _status_word(project, state, design),
+        "design": design,
+        "round": int(state.get("round") or 0),
+        "stage": state.get("stage") or "none",
+        "filters": {"severity": severities, "persona": personas, "raw": raw},
+        "imported": totals["total"],
+        "findings": rows,
+        "counts": stats,
+        "next": _triage_next(findings),
+        "note": TRUST_LINE,
+    }
+    files = _isolation_files(project)
+    if _json(args):
+        for message in (corrupt, _isolation_message(files)):
+            if message:
+                stream.diagnostic(message)
+        _dump(payload)
+        return stream.ExitCode.OK
+
+    try:
+        ranges = display.parse_ranges(getattr(args, "ranges", None))
+    except ValueError as exc:
+        _error(str(exc))
+        return stream.ExitCode.STATE
+
+    lines = ["EGM report", ""] + layout.key_value([
+        ("design", design or "(none selected)"),
+        ("round", str(payload["round"])),
+        ("findings", _finding_line(totals)),
+        ("severity", _severity_line(totals)),
+    ], width, mode)
+
+    if not rows:
+        lines += [""] + theme.wrap("no findings match " + _filter_text(severities, personas), width, indent=0, hang=2)
+
+    groups: Dict[str, List[dict]] = {}
+    for row in rows:  # already ordered, so group order is severity order
+        groups.setdefault(str(row.get("severity") or "unknown").lower(), []).append(row)
+    for name, group in groups.items():
+        if lines[-1].strip():
+            lines.append("")
+        heading = "{} ({})".format(layout.severity_label(name), len(group))
+        for piece in theme.wrap(heading, width, indent=0, hang=2):
+            lines.append(theme.paint(piece, name, mode))
+        for row in group:
+            block = report.render_findings([row], width, mode, raw=raw, head="persona")
+            while block and not block[-1].strip():
+                block.pop()
+            lines.extend(block)
+            lines.append("")
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+    lines += [""] + theme.wrap(TRUST_LINE, width, indent=0, hang=0)
+    _add_warnings(lines, [corrupt, _isolation_message(files)], width, mode)
+
+    if ranges:
+        lines = display.render(lines, numbers=False, wrap=False, ranges=ranges).split("\n")
+    if getattr(args, "pager", False):
+        display.page("\n".join(lines))
+    else:
+        _emit_lines(lines)
+    return stream.ExitCode.OK
+
+
+def _ask_key() -> str:
+    """Read one triage answer; ``""`` means end of input."""
+    while True:
+        sys.stdout.write("choice [p/c/e/d/s/q]: ")
+        sys.stdout.flush()
+        line = sys.stdin.readline()
+        if line == "":
+            return ""
+        letter = line.strip()[:1].lower()
+        if letter == "q" or letter in report.DECISION_LETTERS:
+            return letter
+        sys.stdout.write("unknown choice; " + DECISION_HINT + "\n")
+
+
+def _record_decision(project: Optional[str], row: dict, decision: str) -> dict:
+    """Persist one decision and the memory entry that explains it."""
+    state_mod.decide(str(row.get("id") or ""), decision, project=project)
+    where = " at " + str(row["location"]) if row.get("location") else ""
+    memory.add(
+        "egm {} ({}): {}{}".format(row.get("id"), row.get("severity") or "finding", decision, where),
+        tags=["egm", "decision"],
+        project=project,
+    )
+    return {
+        "id": row.get("id"),
+        "decision": decision,
+        "severity": row.get("severity") or "",
+        "persona": row.get("persona") or "",
+    }
+
+
+def egm_resolve(args) -> int:
+    project = _project(args)
+    width = _width(args)
+    mode = _mode(args)
+    every = bool(getattr(args, "all", False))
+    requested = getattr(args, "decide", None)
+    decision = report.decision_of(requested) if requested is not None else ""
+    interactive = (not _json(args)) and sys.stdin.isatty() and sys.stdout.isatty()
+
+    if requested is not None and not decision:
+        _error("unknown decision: {} (choose {})".format(requested, ", ".join(report.DECISIONS)))
+        return stream.ExitCode.ARGS
+    if every and not decision:
+        _error("--all needs --decide D (choose {})".format(", ".join(report.DECISIONS)))
+        return stream.ExitCode.ARGS
+    if not decision and not interactive:
+        _error("egm resolve needs an interactive terminal")
+        stream.diagnostic("  cause: stdin or stdout is redirected, and no prompt is ever written to a pipe")
+        stream.diagnostic("  instead: orchestra-tx egm resolve --decide propose [--all]")
+        stream.diagnostic("  choices: " + ", ".join(report.DECISIONS))
+        return stream.ExitCode.STATE
+
+    wait = getattr(args, "lock_timeout", None)
+    stopped = ""
+    decided: List[dict] = []
+    try:
+        with store.locked(state_mod.egm_dir(project), timeout=LOCK_WAIT if wait is None else float(wait)):
+            state, corrupt = state_mod.load_state(project)
+            findings = _decisions(state_mod.load_findings(project), state_mod.load_triage(project))
+            if not findings:
+                _error("no findings imported yet")
+                stream.diagnostic("  next : orchestra-tx egm review REPORT.md")
+                return stream.ExitCode.MISSING
+            open_rows = [row for row in report.ordered(findings) if not report.is_settled(row)]
+            if not decision and open_rows:
+                lines = theme.wrap("Triage: " + DECISION_HINT, width, indent=0, hang=8) + [""]
+                _emit_lines(lines)
+            targets = open_rows if (every or not decision) else open_rows[:1]
+            for row in targets:
+                if decision:
+                    choice = decision
+                else:
+                    _emit_lines(report.render_findings([row], width, mode, head="id"))
+                    answer = _ask_key()
+                    if answer in ("", "q"):
+                        stopped = "quit" if answer == "q" else "end of input"
+                        break
+                    if answer == "s":
+                        continue
+                    choice = report.DECISION_LETTERS[answer]
+                decided.append(_record_decision(project, row, choice))
+            if decided:
+                state["stage"] = "triaged"
+                state["updated"] = state_mod.now()
+                state_mod.save_state(state, project)
+    except store.LockTimeout as exc:
+        _error(str(exc))
+        stream.diagnostic("  next : retry when the other orchestra-tx session finishes")
+        return stream.ExitCode.LOCKED
+
+    current = _decisions(state_mod.load_findings(project), state_mod.load_triage(project))
+    stats = report.summarize(current)
+    blocking = report.unsettled(current)
+    remaining = [row for row in report.ordered(current) if not report.is_settled(row)]
+    design = state.get("design") or ""
+    next_action = _triage_next(current)
+    files = _isolation_files(project)
+    payload = {
+        "status": _status_word(project, state, design),
+        "design": design,
+        "round": int(state.get("round") or 0),
+        "stage": state.get("stage") or "none",
+        "decided": decided,
+        "remaining": [row.get("id") for row in remaining],
+        "findings": current,
+        "counts": stats,
+        "triage": str(state_mod.triage_path(project)),
+        "stopped": stopped,
+        "next": next_action,
+    }
+    if _json(args):
+        for message in (corrupt, _isolation_message(files)):
+            if message:
+                stream.diagnostic(message)
+        _dump(payload)
+        return stream.ExitCode.OK
+
+    rows = [
+        ("decided", "{} finding{}".format(len(decided), "" if len(decided) == 1 else "s")),
+        ("open", "{} ({} blocker/major)".format(stats["open"], len(blocking))),
+        ("triage", _rel(state_mod.triage_path(project), project)),
+    ]
+    lines = [""] + layout.key_value(rows, width, mode)
+    if stopped:
+        lines += [""] + theme.wrap("stopped ({}); progress is saved, re-run to resume".format(stopped), width, indent=0, hang=2)
+    if not remaining:
+        lines += [""] + theme.wrap("every finding is settled", width, indent=0, hang=2)
+    lines += [""] + layout.key_value([("next", next_action)], width, mode)
+    _add_warnings(lines, [corrupt, _isolation_message(files)], width, mode)
     _emit_lines(lines)
     return stream.ExitCode.OK
 
@@ -532,10 +775,7 @@ def egm_check(args) -> int:
         lines.append("")
         lines += report.render_findings(open_rows, width, mode)
         lines += _warning_lines("settle these findings before treating the design as reviewed", width, mode)
-    for message in [corrupt, _isolation_message(files)]:
-        if message:
-            lines.append("")
-            lines += _warning_lines(message, width, mode)
+    _add_warnings(lines, [corrupt, _isolation_message(files)], width, mode)
     _emit_lines(lines)
     return code
 
@@ -545,6 +785,8 @@ VERBS.update({
     "status": egm_status,
     "brief": egm_brief,
     "review": egm_review,
+    "report": egm_report,
+    "resolve": egm_resolve,
     "check": egm_check,
 })
 
