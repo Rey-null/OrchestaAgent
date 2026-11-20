@@ -12,6 +12,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, List, Optional
@@ -133,14 +134,49 @@ def read_jsonl(target: Path) -> List[dict]:
     return rows
 
 
+class LockTimeout(RuntimeError):
+    """Another process held the advisory lock past the caller's deadline."""
+
+
+def _lock_pid(directory: Path) -> str:
+    try:
+        text = (directory / ".lock").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    return text.splitlines()[0].strip() if text else ""
+
+
 @contextmanager
-def locked(directory: Path) -> Iterator[None]:
-    """Advisory lock so concurrent Termux sessions cannot clobber each other."""
+def locked(directory: Path, timeout: Optional[float] = None) -> Iterator[None]:
+    """Advisory lock so concurrent Termux sessions cannot clobber each other.
+
+    ``timeout=None`` waits forever; a number of seconds raises
+    :class:`LockTimeout` instead, naming the holder recorded in the lock file.
+    """
     ensure_dir(directory)
     handle = (directory / ".lock").open("a+")
     try:
         if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            if timeout is None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            else:
+                deadline = time.monotonic() + max(0.0, float(timeout))
+                while True:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            pid = _lock_pid(directory)
+                            holder = "pid " + pid if pid else "another session"
+                            raise LockTimeout(
+                                "orchestra-tx lock is held by {}; retry when it finishes".format(holder)
+                            )
+                        time.sleep(0.05)
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(os.getpid()))
+            handle.flush()
         yield
     finally:
         if fcntl is not None:
