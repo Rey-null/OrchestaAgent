@@ -148,13 +148,61 @@ class SettleTests(unittest.TestCase):
         self.assertEqual(stats["by_persona"]["ux"], 2)
 
 
+class SelectTests(unittest.TestCase):
+    def rows(self):
+        return [
+            {"id": "b", "severity": "minor", "persona": "docs", "claim": "minor", "decision": ""},
+            {"id": "a", "severity": "blocker", "persona": "ux", "claim": "blocker", "decision": ""},
+            {"id": "c", "severity": "major", "persona": "ux", "claim": "major", "decision": ""},
+        ]
+
+    def test_ordered_blockers_first(self):
+        self.assertEqual([row["id"] for row in report.ordered(self.rows())], ["a", "c", "b"])
+
+    def test_filtered_by_severity_and_persona(self):
+        rows = self.rows()
+        self.assertEqual([row["id"] for row in report.filtered(rows, ["major"])], ["c"])
+        self.assertEqual([row["id"] for row in report.filtered(rows, personas=["UX"])], ["a", "c"])
+        self.assertEqual(len(report.filtered(rows)), 3)
+
+    def test_unknown_decisions_are_not_decisions(self):
+        self.assertEqual(report.decision_of({"decision": "p"}), "propose")
+        self.assertEqual(report.decision_of("decline"), "decline")
+        self.assertEqual(report.decision_of("quit"), "")
+        self.assertEqual(report.decision_of("maybe"), "")
+
+
 class RenderTests(unittest.TestCase):
+    def test_heading_modes_and_raw(self):
+        findings, _ = report.parse_report(HEADING_REPORT)
+        rows = [finding.as_dict() for finding in findings]
+        head = report.render_findings(rows[:1], 40, head="id")[0]
+        self.assertTrue(head.startswith(rows[0]["id"]), head)
+        bullet = rows[-1]
+        bullet["claim"] = "parsed"
+        self.assertIn("parsed", "\n".join(report.render_findings([bullet], 40)))
+        self.assertIn("Persona", "\n".join(report.render_findings([bullet], 40, raw=True)))
+
     def test_render_fits_40_columns(self):
         findings, _ = report.parse_report(HEADING_REPORT)
         rows = [finding.as_dict() for finding in findings]
         for width in (40, 60, 80, 120):
             for line in report.render_findings(rows, width):
                 self.assertLessEqual(len(line), width, line)
+
+    def test_colour_is_applied_after_wrapping(self):
+        # A real TTY has colour on: escapes must not count as width or leak.
+        row = {
+            "id": "abcd1234", "severity": "blocker", "persona": "accessibility-reviewer",
+            "location": "src/auth.py:42", "claim": "Token comparison leaks timing",
+        }
+        lines = [line for line in report.render_findings([row], 40, "always") if line]
+        for line in lines:
+            visible = re.sub(r"\033\[[0-9;]*m", "", line)
+            self.assertLessEqual(len(visible), 40, line)
+            if "\033" in line:
+                self.assertTrue(line.endswith("\033[0m"), line)
+                self.assertEqual(line.count("\033[1;31m"), 1, line)
 
     def test_severity_is_a_word(self):
         findings, _ = report.parse_report(HEADING_REPORT)
