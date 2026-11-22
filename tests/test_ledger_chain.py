@@ -127,6 +127,8 @@ def test_opening_an_older_database_backfills_the_chain(tmp_path):
 
 
 def test_pre_registration_is_chained(tmp_path):
+    from chamber_orchestra.experiment.prereg import PreRegistration
+
     prereg = PreRegistration(
         scope="coding",
         baseline_id="base",
