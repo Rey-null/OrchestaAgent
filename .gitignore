@@ -1,7 +1,11 @@
+.venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 *.egg-info/
 build/
 dist/
-.venv/
-.orchestra/context.md
+.runtime/
+runs/
+*.sqlite3.key
+.env

@@ -1,22 +1,32 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "orchestra-tx"
+name = "chamber-orchestra"
 version = "0.1.0"
-description = "Termux-friendly plugin for orchestraCLI: session plans, persistent memory and a terminal text-file display"
-requires-python = ">=3.9"
-license = { text = "MIT" }
-authors = [{ name = "orchestra-tx" }]
-keywords = ["orchestra", "termux", "cli", "planning", "memory"]
-dependencies = []
+description = "Multi-agent orchestration with controlled, evidence-gated recursive harness improvement"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "fastapi>=0.110",
+    "pydantic>=2.6",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
 
 [project.scripts]
-orchestra-tx = "orchestra_tx.cli:main"
+chamber = "chamber_orchestra.cli:main"
 
-[tool.setuptools]
-packages = ["orchestra_tx", "orchestra_tx.egm", "orchestra_tx.ui"]
+[tool.setuptools.packages.find]
+include = ["chamber_orchestra*"]
 
-[tool.setuptools.package-data]
-orchestra_tx = ["data/*.txt"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
